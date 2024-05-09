@@ -49,3 +49,16 @@ $ yarn run test:e2e
 # test coverage
 $ yarn run test:cov
 ```
+
+## Screenshots
+### Processing transactions from mempool
+<img width="1105" alt="Screenshot 2024-05-09 at 03 15 45" src="https://github.com/NathBabs/bitcoin-transaction-indexer/assets/17989552/a627cacb-5c0a-49fb-a9fe-5c8050cfeef4">
+
+### Processing transactions from block
+<img width="1105" alt="Screenshot 2024-05-09 at 09 59 29" src="https://github.com/NathBabs/bitcoin-transaction-indexer/assets/17989552/fc4c72fb-12e9-4df8-8a43-93394aa57929">
+
+### Data in RocksDB
+<img width="1423" alt="Screenshot 2024-05-09 at 11 28 17" src="https://github.com/NathBabs/bitcoin-transaction-indexer/assets/17989552/16b59b06-c915-4c7a-b16c-75e0238b4354">
+
+
+
