@@ -1,0 +1,33 @@
+version: '3'
+name: btc-indexer
+
+services:
+  redis-service:
+    image: redis:latest
+    # container_name: redis
+    ports:
+      - 63791:6379
+    restart: "no"
+    volumes:
+      - redis:/data
+    networks:
+      - btc-indexer-dev
+  redis-commander:
+    image: ghcr.io/joeferner/redis-commander:latest
+    container_name: redis-commander
+    hostname: redis-commander-service
+    environment:
+      - REDIS_HOSTS=local:redis-service:6379
+    ports:
+      - "8051:8081"
+    networks:
+      - btc-indexer-dev
+
+volumes:
+  redis:
+    driver: local
+  dbvolume:
+    driver: local
+networks:
+  btc-indexer-dev:
+    driver: bridge
