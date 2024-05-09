@@ -8,6 +8,7 @@ import { AbstractBatch } from 'abstract-leveldown';
 import EncodingDown from 'encoding-down';
 import levelup, { LevelUp } from 'levelup';
 import RocksDB from 'rocksdb';
+import { DATABASE_BUCKETS } from '../utils/constants';
 
 const delimitor = ':';
 
@@ -50,6 +51,9 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
       //   `::: test value in rocksdb retrieved => ${JSON.stringify(test)}`,
       // );
       await this.clear();
+
+      // seed addresses on application startup
+      this.seedAddresses();
 
       this._logger.log(
         '::: is DB operational => ' + this._db.isOpen() + ' :::',
@@ -183,5 +187,42 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
       value: command.value,
     }));
     return this._db.batch(parsedCommands as AbstractBatch[]);
+  }
+
+  /**
+   * a function to get seed the bitcoin addresses from the comma delimited
+   * environment variable called WALLET_ADDRESSES.
+   * @returns
+   */
+  private seedAddresses() {
+    const monitoredAddresses = process.env.WALLET_ADDRESSES.split(',').map(
+      (address) => address.trim(),
+    );
+
+    if (monitoredAddresses.length < 1) {
+      this._logger.log('No addresses found in WALLET_ADDRESSES');
+      return;
+    }
+
+    this._logger.log(
+      `::: seeding the following addresses ${monitoredAddresses} :::`,
+    );
+
+    // map through the addresses, check if they exist in the DB
+    // if they do not exist, add them to the DB
+    monitoredAddresses.forEach((address) => {
+      if (!this.exists(DATABASE_BUCKETS.monitored_address, address)) {
+        this.put(
+          DATABASE_BUCKETS.monitored_address,
+          address,
+          {
+            address,
+          },
+          true,
+        );
+      }
+    });
+
+    return;
   }
 }

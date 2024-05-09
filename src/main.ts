@@ -12,6 +12,8 @@ async function bootstrap() {
 
   const port = configService.get<number>('PORT') ?? 3000;
 
-  await app.listen(port);
+  await app.listen(port).then(() => {
+    console.log(`Hi there, Welcome to Bitcoin Transaction Indexer 🌕`);
+  });
 }
 bootstrap();

@@ -51,7 +51,6 @@ export class QuickNodeService {
 
   async getrawmempool({ verbose = false }) {
     this.body.method = 'getrawmempool';
-    // const O = { ...this.options, body: this.body };
 
     try {
       const response = await this.post('getrawmempool', [verbose]);

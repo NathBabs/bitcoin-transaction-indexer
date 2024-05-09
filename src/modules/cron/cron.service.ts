@@ -11,7 +11,24 @@ import {
   BatchCommand,
   RocksDbService,
 } from '../../rocks-db/rocks-db-service.service';
-import { DATABASE_BUCKETS } from '../../utils/constants';
+import {
+  DATABASE_BUCKETS,
+  MAX_RETRY_ATTEMPTS,
+  RETRYABLE_STATUS_CODES,
+} from '../../utils/constants';
+import {
+  catchError,
+  delay,
+  lastValueFrom,
+  map,
+  retry,
+  retryWhen,
+  scan,
+  throwError,
+  timer,
+} from 'rxjs';
+import { AxiosError } from 'axios';
+import { HttpService } from '@nestjs/axios';
 
 @Injectable()
 export class CronService {
@@ -22,11 +39,12 @@ export class CronService {
     private readonly mempoolQueue: Queue,
     private readonly quickNodeService: QuickNodeService,
     private readonly rocksDbService: RocksDbService,
+    private readonly httpService: HttpService,
   ) {}
 
-  //   @Cron(jobConfigs.monitorMempoolJob.cron, {
-  //     timeZone: process.env.TZ,
-  //   })
+  @Cron(jobConfigs.monitorMempoolJob.cron, {
+    timeZone: process.env.TZ,
+  })
   async monitorMempoolJob() {
     try {
       this.logger.log('::: starting monitor mempool job... :::');
@@ -52,6 +70,10 @@ export class CronService {
   })
   async retrieveNewBlocks() {
     try {
+      /**
+       * we are also going to use this function to monitor the transactions
+       * in the blocks for the list of monitored addresses
+       */
       this.logger.log('::: starting retrieve new blocks job :::');
 
       /**
@@ -266,6 +288,12 @@ export class CronService {
             scriptPubKey: vout.scriptPubKey || null,
           }));
 
+          /**
+           * check the address in vout, and see if it exists among the list of
+           * addresses we are monitoring in the DB, if it exists in the DB
+           * send the details of this transction to the webhook URL
+           */
+
           const time = tx.time;
           const blockHeight = tx.blockHeight;
           const blockHash = tx.blockHash;
@@ -283,6 +311,31 @@ export class CronService {
           if (txExists) {
             return;
           }
+
+          outputs.map((output: { scriptPubKey: { address: any } }) => {
+            const address = output?.scriptPubKey?.address;
+            if (address) {
+              this.logger.log(`::: address => ${address} :::`);
+              if (
+                this.rocksDbService.exists(
+                  DATABASE_BUCKETS.monitored_address,
+                  address,
+                )
+              ) {
+                this.logger.log(
+                  `::: transaction found for monitored address :::`,
+                );
+                this.sendTransactionToWebhook({
+                  txHash,
+                  inputs,
+                  outputs,
+                  time,
+                  blockHeight,
+                  blockHash,
+                });
+              }
+            }
+          });
 
           return {
             bucket: DATABASE_BUCKETS.transactions,
@@ -323,6 +376,71 @@ export class CronService {
     } catch (error) {
       this.logger.error(
         `::: error in processing block transactions => ${error} :::`,
+      );
+      return;
+    }
+  }
+
+  async sendTransactionToWebhook(transaction: any) {
+    try {
+      this.logger.log(`::: sending transaction to webhook :::`);
+      // get WEBHOOK_URL from environment variable
+      // check if it exists and t is a valid URL
+      const webhookUrl = process.env.WEBHOOK_URL;
+
+      if (!webhookUrl) {
+        throw new Error('WEBHOOK_URL is not defined');
+      }
+
+      const parsedUrl = new URL(webhookUrl);
+      if (!parsedUrl.protocol || !parsedUrl.hostname) {
+        throw new Error('Invalid webhook URL');
+      }
+
+      // write a post request to the webhook with exponential backoff on failure
+      const response = await lastValueFrom(
+        this.httpService
+          .post(
+            webhookUrl,
+            { transaction },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            },
+          )
+          .pipe(
+            map((response) => response.status),
+            retry({
+              count: MAX_RETRY_ATTEMPTS,
+              delay: (error, retryCount) => {
+                if (!RETRYABLE_STATUS_CODES.includes(error.status)) {
+                  return throwError(
+                    () => new Error('Non-retryable status code'),
+                  );
+                }
+                const retryDelay = Math.pow(2, retryCount) * 1000; // Exponential backoff
+                this.logger.log(
+                  `Attempt ${retryCount}: retrying in ${retryDelay}ms`,
+                );
+                return timer(retryDelay);
+              },
+            }),
+            catchError((error: AxiosError) => {
+              this.logger.log(JSON.stringify(error));
+              throw error;
+            }),
+          ),
+      );
+
+      this.logger.log(
+        `::: successfully sent transaction to webhook ${webhookUrl}:::`,
+      );
+
+      return;
+    } catch (error) {
+      this.logger.error(
+        `::: error in sending transaction to webhook => ${error} :::`,
       );
       return;
     }
