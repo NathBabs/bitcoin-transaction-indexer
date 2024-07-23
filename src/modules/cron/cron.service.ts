@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { jobConfigs } from '../../config/jobs.config';
 import { Cron } from '@nestjs/schedule';
 import { QuickNodeService } from '../../quicknode-service/quicknode-service.service';
@@ -10,7 +10,7 @@ import { fstat, writeFileSync } from 'fs';
 import {
   BatchCommand,
   RocksDbService,
-} from '../../rocks-db/rocks-db-service.service';
+} from '../rocks-db/rocks-db-service.service';
 import {
   DATABASE_BUCKETS,
   MAX_RETRY_ATTEMPTS,
@@ -29,10 +29,30 @@ import {
 } from 'rxjs';
 import { AxiosError } from 'axios';
 import { HttpService } from '@nestjs/axios';
+import {
+  MonitorAddressDto,
+  MonitorAddressDtoType,
+  TransactionType,
+} from '../transaction-indexer/dto/monitor-address.dto';
+import * as bitcoin from 'bitcoinjs-lib';
+import { pubkeyToAddress } from '../../utils/utils';
+import { setTimeout } from 'node:timers/promises';
+
+type transaction = {
+  txHash: any;
+  inputs: any;
+  outputs: any;
+  time: any;
+  blockHeight: any;
+  blockHash: any;
+  confirmation?: any;
+};
 
 @Injectable()
-export class CronService {
+export class CronService implements OnApplicationBootstrap {
   private readonly logger = new Logger(CronService.name);
+  private isRunning = false;
+  private currentProcessingHeight: number;
 
   constructor(
     @InjectQueue('monitor-mempool')
@@ -40,11 +60,65 @@ export class CronService {
     private readonly quickNodeService: QuickNodeService,
     private readonly rocksDbService: RocksDbService,
     private readonly httpService: HttpService,
-  ) {}
+  ) {
+    // this.init();
+  }
+  onApplicationBootstrap() {
+    // throw new Error('Method not implemented.');
+    // await this.rocksDbService.initialize();
+    this.syncMissedBlocks();
+    this.startMonitoring();
+  }
 
-  @Cron(jobConfigs.monitorMempoolJob.cron, {
-    timeZone: process.env.TZ,
-  })
+  private async init() {
+    // // await this.rocksDbService.initialize();
+    // this.syncMissedBlocks();
+    // this.startMonitoring();
+  }
+
+  async syncMissedBlocks() {
+    const lastProcessedBlock = await this.getInitialBlockHeight();
+
+    // if (Number(lastProcessedBlock) === 0) return;
+    const currentBlockHeight = await this.quickNodeService.getblockcount();
+
+    this.logger.log(
+      `::: syncMissedBlocks => last processed block ${lastProcessedBlock} and current block height ${currentBlockHeight} `,
+    );
+
+    if (Number(currentBlockHeight) > Number(lastProcessedBlock)) {
+      this.mempoolQueue.add('sync-pending-blocks', {
+        currentBlockHeight: Number(currentBlockHeight),
+        lastProcessedBlock: Number(lastProcessedBlock),
+      });
+
+      this.logger.log(
+        `Queued ${
+          currentBlockHeight - lastProcessedBlock
+        } missed blocks for processing`,
+      );
+    }
+  }
+
+  private async startMonitoring() {
+    this.isRunning = true;
+
+    this.currentProcessingHeight = await this.getInitialBlockHeight();
+    while (this.isRunning) {
+      try {
+        await this.monitorMempoolJob();
+        await this.retrieveNewBlocks();
+
+        // Add a small delay
+        await setTimeout(1500);
+      } catch (error) {
+        this.logger.error(`Error in monitoring loop: ${error.message}`);
+        // Add a longer delay if an error occurs
+        await setTimeout(5000);
+      }
+    }
+  }
+
   async monitorMempoolJob() {
     try {
       this.logger.log('::: starting monitor mempool job... :::');
@@ -65,9 +139,6 @@ export class CronService {
     }
   }
 
-  @Cron(jobConfigs.retrieveNewBlocksJob.cron, {
-    timeZone: process.env.TZ,
-  })
   async retrieveNewBlocks() {
     try {
       /**
@@ -77,27 +148,58 @@ export class CronService {
       this.logger.log('::: starting retrieve new blocks job :::');
 
       /**
+       * get the block hash of the current processing height, it will throw an
+       * error if it doesn't exist, but will return a value if it exists
+       */
+      const blockExists = await this.quickNodeService.getblockhash(
+        this.currentProcessingHeight,
+      );
+
+      if (blockExists) {
+        this.logger.log(`::: block hash => ${blockExists} :::`);
+
+        /**
+         * get block
+         */
+        const block = await this.quickNodeService.getblock(blockExists, 2);
+        this.logger.log({ tx: block.tx[0] }, `::: block details => :::`);
+        this.mempoolQueue.add('new-block-job', {
+          blockResponse: block,
+        });
+
+        /**
+         * update last processed block
+         */
+        await this.rocksDbService.setLastProcessedBlock(
+          this.currentProcessingHeight,
+        );
+        this.logger.log(
+          `Queued block ${this.currentProcessingHeight} for processing`,
+        );
+
+        /**
+         * increment current processing height
+         */
+        this.currentProcessingHeight++;
+
+        return;
+      } else {
+        this.logger.log(
+          `Block ${this.currentProcessingHeight} does not exist yet. Waiting........`,
+        );
+      }
+
+      /**
        * get block count
        */
-      const blockCount = await this.quickNodeService.getblockcount();
-      this.logger.log(`::: block count => ${blockCount} :::`);
+      // const blockCount = await this.quickNodeService.getblockcount();
+      // this.logger.log(`::: block count => ${blockCount} :::`);
 
       /**
        * get block hash
        */
-      const blockHash = await this.quickNodeService.getblockhash(blockCount);
-      this.logger.log(`::: block hash => ${blockHash} :::`);
-
-      /**
-       * get block
-       */
-      const block = await this.quickNodeService.getblock(blockHash, 2);
-      this.logger.log({ tx: block.tx[0] }, `::: block details => :::`);
-      this.mempoolQueue.add('new-block-job', {
-        blockResponse: block,
-      });
-
-      return;
+      // const blockHash = await this.quickNodeService.getblockhash(blockCount);
+      // this.logger.log(`::: block hash => ${blockHash} :::`);
     } catch (error) {
       this.logger.error(
         `::: error in retrieve new blocks job => ${JSON.stringify(error)} :::`,
@@ -152,6 +254,24 @@ export class CronService {
 
     // Process transactions in chunks of 100
     await this.processTransactionsInChunks(transactions, 150, 'mempool');
+  }
+
+  async processPendingBlocks(
+    job: Job<{ currentBlockHeight: any; lastProcessedBlock: any }>,
+  ) {
+    this.logger.log(`::: processing pending blocks :::`);
+    const { currentBlockHeight, lastProcessedBlock } = job.data;
+
+    for (let i = lastProcessedBlock + 1; i <= currentBlockHeight; i++) {
+      const blockHash = await this.quickNodeService.getblockhash(i);
+      const block = await this.quickNodeService.getblock(blockHash, 2);
+      /**
+       * add to process block queue
+       */
+      this.mempoolQueue.add('new-block-job', {
+        blockResponse: block,
+      });
+    }
   }
 
   /**
@@ -240,7 +360,9 @@ export class CronService {
       /**
        * batch write to rocksdb
        */
-      await this.rocksDbService.batch(parsedMempoolTransactionDetails);
+      await this.rocksDbService.batch(
+        parsedMempoolTransactionDetails.filter(Boolean),
+      );
 
       this.logger.log('------------------------------------------------------');
       this.logger.log(
@@ -275,12 +397,23 @@ export class CronService {
           const txHash = tx.transactionId;
 
           // Transaction inputs and outputs
-          const inputs = tx.vin.map((vin) => ({
-            txid: vin.txid || null,
-            vout: vin.vout || null,
-            scriptSig: vin.scriptSig || null,
-            sequence: vin.sequence || null,
-          }));
+          const inputs = tx.vin
+            .map((vin) => ({
+              txid: vin.txid || null,
+              vout: vin.vout || null,
+              scriptSig: vin.scriptSig || null,
+              // asm: vin.scriptSig?.asm || null,
+              // hex: vin.scriptSig?.hex || null,
+              sequence: vin.sequence || null,
+              /**
+               * generate the wallet address from the asm if it is not an empty string
+               */
+              address:
+                vin.scriptSig != null && vin.scriptSig?.asm.length > 0
+                  ? pubkeyToAddress(vin.scriptSig.asm)
+                  : null,
+            }))
+            .filter(Boolean);
 
           const outputs = tx.vout.map((vout) => ({
             value: vout.value || null,
@@ -300,39 +433,125 @@ export class CronService {
 
           /**
            * check if txHash exists in rocksdb, if it exists,
-           * skip and don't return anything
+           * skip and don't return anything becausewe have processed it
+           * already
            */
-          const txExists = await this.rocksDbService.exists(
+          const txExists = await this.rocksDbService.get(
             DATABASE_BUCKETS.transactions,
             txHash,
             false,
           );
 
+          let txConfirmations: any;
+
           if (txExists) {
+            this.logger.log(
+              `::: existing transaction found for ${txHash} in the DB => [${JSON.stringify(
+                txExists,
+                null,
+                2,
+              )}] :::`,
+            );
+
+            txConfirmations = txExists?.['confirmations']
+              ? txExists?.['confirmations'] + 1
+              : 0;
+            await this.updateTransactionConfirmation(
+              txHash,
+              blockHeight,
+              txExists,
+            );
             return;
           }
 
-          outputs.map((output: { scriptPubKey: { address: any } }) => {
-            const address = output?.scriptPubKey?.address;
+          inputs.map(async (input) => {
+            const address = input.address;
+
             if (address) {
-              this.logger.log(`::: address => ${address} :::`);
-              if (
-                this.rocksDbService.exists(
+              this.logger.log(`::: address => ${address}`);
+
+              const existingAddress: Omit<MonitorAddressDtoType, 'address'> =
+                await this.rocksDbService.get(
                   DATABASE_BUCKETS.monitored_address,
                   address,
-                )
-              ) {
-                this.logger.log(
-                  `::: transaction found for monitored address :::`,
+                  false,
                 );
-                this.sendTransactionToWebhook({
-                  txHash,
-                  inputs,
-                  outputs,
-                  time,
-                  blockHeight,
-                  blockHash,
-                });
+
+              if (existingAddress) {
+                this.logger.log(
+                  `::: transaction found for monitored address => ${address} :::`,
+                );
+
+                /**
+                 * send a notification to the web hook url if transactiion type
+                 * is transfer or all
+                 */
+                const maxConfirmations =
+                  existingAddress.maximumConfirmations ?? 0;
+                if (
+                  (existingAddress.transactionType &&
+                    (existingAddress.transactionType ==
+                      TransactionType.TRANSFER ||
+                      existingAddress.transactionType ==
+                        TransactionType.ALL)) ||
+                  txConfirmations <= maxConfirmations
+                ) {
+                  this.sendTransactionToWebhook(
+                    {
+                      txHash,
+                      inputs,
+                      outputs,
+                      time,
+                      blockHeight,
+                      blockHash,
+                    },
+                    existingAddress.webhookUrl,
+                    `${TransactionType.TRANSFER} Transaction detected for ${address}`,
+                  );
+                }
+              }
+            }
+          });
+
+          outputs.map(async (output: { scriptPubKey: { address: any } }) => {
+            const address = output?.scriptPubKey?.address;
+            if (address) {
+              // this.logger.log(`::: address => ${address} :::`);
+              const existingAddress: Omit<MonitorAddressDtoType, 'address'> =
+                await this.rocksDbService.get(
+                  DATABASE_BUCKETS.monitored_address,
+                  address,
+                  false,
+                );
+              if (existingAddress) {
+                this.logger.log(
+                  `::: transaction found for monitored address => ${address} :::`,
+                );
+
+                // send a notification to the webhook url
+                const maxConfirmations =
+                  existingAddress.maximumConfirmations ?? 0;
+                if (
+                  (existingAddress.transactionType &&
+                    (existingAddress.transactionType ==
+                      TransactionType.DEPOSIT ||
+                      existingAddress.transactionType ==
+                        TransactionType.ALL)) ||
+                  txConfirmations <= maxConfirmations
+                ) {
+                  this.sendTransactionToWebhook(
+                    {
+                      txHash,
+                      inputs,
+                      outputs,
+                      time,
+                      blockHeight,
+                      blockHash,
+                    },
+                    existingAddress.webhookUrl,
+                    `${TransactionType.DEPOSIT} Transaction detected for ${address}`,
+                  );
+                }
               }
             }
           });
@@ -348,6 +567,7 @@ export class CronService {
               time,
               blockHeight,
               blockHash,
+              confirmations: 1,
             },
           } as BatchCommand;
         }),
@@ -381,12 +601,16 @@ export class CronService {
     }
   }
 
-  async sendTransactionToWebhook(transaction: any) {
+  async sendTransactionToWebhook(
+    transaction: any,
+    webhookUrl: string,
+    message: string,
+  ) {
     try {
       this.logger.log(`::: sending transaction to webhook :::`);
       // get WEBHOOK_URL from environment variable
       // check if it exists and t is a valid URL
-      const webhookUrl = process.env.WEBHOOK_URL;
+      // const webhookUrl = process.env.WEBHOOK_URL;
 
       if (!webhookUrl) {
         throw new Error('WEBHOOK_URL is not defined');
@@ -397,18 +621,19 @@ export class CronService {
         throw new Error('Invalid webhook URL');
       }
 
+      const data = {
+        transaction,
+        message,
+      };
+
       // write a post request to the webhook with exponential backoff on failure
       const response = await lastValueFrom(
         this.httpService
-          .post(
-            webhookUrl,
-            { transaction },
-            {
-              headers: {
-                'Content-Type': 'application/json',
-              },
+          .post(webhookUrl, data, {
+            headers: {
+              'Content-Type': 'application/json',
             },
-          )
+          })
           .pipe(
             map((response) => response.status),
             retry({
@@ -444,5 +669,53 @@ export class CronService {
       );
       return;
     }
+  }
+
+  private async getInitialBlockHeight(): Promise<number> {
+    try {
+      const lastProcessedBlock =
+        await this.rocksDbService.getLastProcessedBlock();
+
+      this.logger.log(
+        `::: getInitialBlockHeight => last processed block ${lastProcessedBlock} :::`,
+      );
+      return lastProcessedBlock + 1;
+    } catch (error) {
+      this.logger.warn(
+        'No last processed block found in DB. Starting from current block height.',
+      );
+      const currentBlockHeight = await this.quickNodeService.getblockcount();
+      this.logger.log(
+        `::: getInitialBlockHeight => current block HEIGHT  ${currentBlockHeight} :::`,
+      );
+      await this.rocksDbService.setLastProcessedBlock(currentBlockHeight);
+      return currentBlockHeight;
+    }
+  }
+
+  async updateTransactionConfirmation(
+    txHash: string,
+    blockHeight: number,
+    initialValue: any,
+  ) {
+    const transactionBlockHeight = initialValue.blockHeight;
+    const confirmations = blockHeight - transactionBlockHeight + 1;
+
+    const updatedTransaction = {
+      ...initialValue,
+      confirmations,
+    };
+
+    // update confirmation in the DB
+    await this.rocksDbService.put({
+      bucket: DATABASE_BUCKETS.transactions,
+      key: txHash,
+      val: updatedTransaction,
+      log: false,
+    });
+
+    this.logger.log(
+      `Updated confirmations for transaction ${txHash}: ${confirmations}`,
+    );
   }
 }

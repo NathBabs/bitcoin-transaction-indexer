@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { Modules } from './modules/modules';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { RocksDbService } from './rocks-db/rocks-db-service.service';
 import { QuickNodeService } from './quicknode-service/quicknode-service.service';
 import { ScheduleModule } from '@nestjs/schedule';
 import { HttpModule } from '@nestjs/axios';
@@ -56,6 +55,6 @@ import { LoggerModule } from 'nestjs-pino';
     CronModule,
   ],
   controllers: [],
-  providers: [ConfigService, RocksDbService, QuickNodeService],
+  providers: [ConfigService, QuickNodeService],
 })
 export class AppModule {}

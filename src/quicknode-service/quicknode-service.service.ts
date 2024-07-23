@@ -108,7 +108,7 @@ export class QuickNodeService {
       this.logger.log(
         `::: error getting block hash ${JSON.stringify(error)} :::`,
       );
-      throw error;
+      throw 'Something went wrong while fetching block hash e.g invalid block height, network error';
     }
   }
 

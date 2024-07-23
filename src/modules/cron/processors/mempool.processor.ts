@@ -21,4 +21,10 @@ export class MempoolProcessor {
     this.logger.log('::: processing new block job here =========> :::');
     this.cronService.processBlockResponse(job);
   }
+
+  @Process('sync-pending-blocks')
+  async handlePendingBlocksProcess(job: any) {
+    this.logger.log('::: processing pending blocks job here =========> :::');
+    this.cronService.processPendingBlocks(job);
+  }
 }
