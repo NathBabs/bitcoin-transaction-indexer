@@ -445,14 +445,6 @@ export class CronService implements OnApplicationBootstrap {
           let txConfirmations: any;
 
           if (txExists) {
-            this.logger.log(
-              `::: existing transaction found for ${txHash} in the DB => [${JSON.stringify(
-                txExists,
-                null,
-                2,
-              )}] :::`,
-            );
-
             txConfirmations = txExists?.['confirmations']
               ? txExists?.['confirmations'] + 1
               : 0;
