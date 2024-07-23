@@ -91,3 +91,7 @@ Response
 ### Data in RocksDB
 
 <img width="1423" alt="Screenshot 2024-05-09 at 11 28 17" src="https://github.com/NathBabs/bitcoin-transaction-indexer/assets/17989552/16b59b06-c915-4c7a-b16c-75e0238b4354">
+
+### Notifications received on webhook
+<img width="1512" alt="Screenshot 2024-07-23 at 02 43 42" src="https://github.com/user-attachments/assets/2d265835-9552-4470-8792-9b3e89486946">
+
