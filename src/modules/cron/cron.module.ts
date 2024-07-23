@@ -4,10 +4,11 @@ import { QuickNodeService } from '../../quicknode-service/quicknode-service.serv
 import { HttpModule } from '@nestjs/axios';
 import { MempoolProcessor } from './processors/mempool.processor';
 import { ConfigService } from '@nestjs/config';
-import { RocksDbService } from '../../rocks-db/rocks-db-service.service';
+import { RocksDbService } from '../rocks-db/rocks-db-service.service';
+import { RocksDbModule } from '../rocks-db/rocks-db.module';
 
 @Module({
-  imports: [HttpModule],
-  providers: [CronService, QuickNodeService, MempoolProcessor, RocksDbService],
+  imports: [HttpModule, RocksDbModule],
+  providers: [CronService, QuickNodeService, MempoolProcessor],
 })
 export class CronModule {}

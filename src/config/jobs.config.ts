@@ -12,6 +12,6 @@ export const jobConfigs: { [key: string]: JobConfig } = {
   },
   retrieveNewBlocksJob: {
     name: 'Retrieve New Blocks Job',
-    cron: CronExpression.EVERY_30_MINUTES,
+    cron: CronExpression.EVERY_30_SECONDS,
   },
 };

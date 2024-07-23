@@ -8,7 +8,8 @@ import { AbstractBatch } from 'abstract-leveldown';
 import EncodingDown from 'encoding-down';
 import levelup, { LevelUp } from 'levelup';
 import RocksDB from 'rocksdb';
-import { DATABASE_BUCKETS } from '../utils/constants';
+import { DATABASE_BUCKETS } from '../../utils/constants';
+import { error } from 'node:console';
 
 const delimitor = ':';
 
@@ -23,16 +24,47 @@ export interface BatchCommand {
 export class RocksDbService implements OnModuleInit, OnModuleDestroy {
   private readonly _logger = new Logger(RocksDbService.name);
 
-  private readonly _db: LevelUp<RocksDB>;
+  private _db: LevelUp<RocksDB>;
+  private isInitialized = false;
+  private initializationPromise: Promise<void> | null = null;
 
-  constructor() {
-    const fileDb = process.cwd() + process.env.DB_FILE_PATH;
-    this._db = levelup(
-      EncodingDown(RocksDB(fileDb), { valueEncoding: 'json' }),
-      { maxOpenFiles: 5000 },
-      (err: any) =>
-        this._logger.error(`::: error while connecting to DB ${err} :::`),
-    ) as any;
+  constructor() {}
+
+  private async initializeDb(): Promise<void> {
+    try {
+      /**
+       * check if db is already initialized
+       */
+      if (this.isInitialized) {
+        return;
+      }
+
+      const fileDb = process.cwd() + process.env.DB_FILE_PATH;
+      this._db = levelup(
+        EncodingDown(RocksDB(fileDb), { valueEncoding: 'json' }),
+        {
+          maxOpenFiles: 5000,
+          createIfMissing: true,
+          errorIfExists: false,
+        },
+        (err: any) => {
+          if (err) {
+            this._logger.error(`::: error while connecting to DB ${err} :::`);
+            // throw err;
+          }
+        },
+      ) as any;
+
+      // await this.clear();
+      this._logger.log(
+        '::: is DB operational => ' + this._db.isOpen() + ' :::',
+      );
+      this.isInitialized = true;
+    } catch (error) {
+      this._logger.error(
+        `::: Error initializing RocksDB: ${error.message} :::`,
+      );
+    }
   }
 
   /**
@@ -42,25 +74,14 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
    */
   public async onModuleInit(): Promise<void> {
     try {
-      // await this.put('test', 'test', {
-      //   appName: 'Bitcoin Transaction Indexer',
-      // });
-      // this._logger.log(`::: test value in rocksdb inserted :::`);
-      // const test = await this.get('test', 'test');
-      // this._logger.log(
-      //   `::: test value in rocksdb retrieved => ${JSON.stringify(test)}`,
-      // );
-      await this.clear();
-
-      // seed addresses on application startup
-      this.seedAddresses();
-
-      this._logger.log(
-        '::: is DB operational => ' + this._db.isOpen() + ' :::',
-      );
+      if (!this.isInitialized) {
+        this._logger.log('::: initializing DB :::');
+        this.initializationPromise = this.initializeDb();
+      }
+      return this.initializationPromise;
     } catch (error) {
       this._logger.error(
-        `::: Error testing RocksDB connection: ${error.message} :::`,
+        `::: Error initializing RocksDB: ${error.message} :::`,
       );
     }
   }
@@ -68,6 +89,10 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
   public async onModuleDestroy() {
     // close the database connection
     // await this.close();
+    if (this.isInitialized) {
+      await this.close();
+      this.isInitialized = false;
+    }
   }
 
   public async close(): Promise<void> {
@@ -91,7 +116,18 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
       this._logger.log(`::: get ${fullKey} :::`);
     }
 
-    return this._db.get(fullKey as any);
+    /**
+     * prevent rocks db from throwing an error if not found
+     * rather return null if not found
+     */
+
+    return this._db.get(fullKey as any, (error, value) => {
+      if (error) {
+        return null;
+      } else {
+        return value;
+      }
+    });
   }
 
   /**
@@ -136,13 +172,27 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
    * @param log
    * @returns
    */
-  public async put(
-    bucket: string,
-    key: string,
-    val: any,
+  public async put({
+    bucket,
+    key,
+    val,
     log = true,
-  ): Promise<void> {
-    const finalKey = `${bucket}${delimitor}${key}`;
+  }: {
+    bucket?: string;
+    key: string;
+    val: any;
+    log?: boolean;
+  }): Promise<void> {
+    let finalKey: RocksDB.Bytes;
+
+    /**
+     * if there is no bucket passed just use the key only as the final key
+     */
+    if (!bucket) {
+      finalKey = key;
+    }
+
+    finalKey = `${bucket}${delimitor}${key}`;
     if (log) {
       this._logger.log(`::: put ${finalKey} :::`);
     }
@@ -189,40 +239,12 @@ export class RocksDbService implements OnModuleInit, OnModuleDestroy {
     return this._db.batch(parsedCommands as AbstractBatch[]);
   }
 
-  /**
-   * a function to get seed the bitcoin addresses from the comma delimited
-   * environment variable called WALLET_ADDRESSES.
-   * @returns
-   */
-  private seedAddresses() {
-    const monitoredAddresses = process.env.WALLET_ADDRESSES.split(',').map(
-      (address) => address.trim(),
-    );
+  async setLastProcessedBlock(blockHeight: number): Promise<void> {
+    await this._db.put('lastProcessedBlock', blockHeight.toString());
+  }
 
-    if (monitoredAddresses.length < 1) {
-      this._logger.log('No addresses found in WALLET_ADDRESSES');
-      return;
-    }
-
-    this._logger.log(
-      `::: seeding the following addresses ${monitoredAddresses} :::`,
-    );
-
-    // map through the addresses, check if they exist in the DB
-    // if they do not exist, add them to the DB
-    monitoredAddresses.forEach((address) => {
-      if (!this.exists(DATABASE_BUCKETS.monitored_address, address)) {
-        this.put(
-          DATABASE_BUCKETS.monitored_address,
-          address,
-          {
-            address,
-          },
-          true,
-        );
-      }
-    });
-
-    return;
+  async getLastProcessedBlock(): Promise<number> {
+    const value = (await this._db.get('lastProcessedBlock')) as any;
+    return value ? parseInt(value as any, 10) : 0;
   }
 }

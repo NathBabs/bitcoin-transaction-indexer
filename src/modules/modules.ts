@@ -4,6 +4,7 @@ import { CronModule } from './cron/cron.module';
 import { queuesConfig } from '../config/queues.config';
 import { QueuesModule } from './queues.module';
 import { BullModule } from '@nestjs/bull';
+import { RocksDbModule } from './rocks-db/rocks-db.module';
 
 @Global()
 @Module({
@@ -14,6 +15,7 @@ import { BullModule } from '@nestjs/bull';
     }),
     CronModule,
     TransactionIndexerModule,
+    RocksDbModule,
   ],
   providers: [],
 })
